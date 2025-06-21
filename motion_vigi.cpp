@@ -1,5 +1,3 @@
-What can this sketch do
-
 #include <SoftwareSerial.h>
 #include <IRremote.h>
 
