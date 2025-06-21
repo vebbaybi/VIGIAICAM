@@ -38,6 +38,9 @@ float distance = 0.0;
 float confidence = 0.0;
 bool sensorValid = false;
 
+float dist1 = -1;
+float dist2 = -1;
+
 int currentState = 0; // 0 = IDLE, 1 = PATROLLING, 2 = ALERT, 3 = FAULT
 unsigned long lastLoopTime = 0;
 unsigned long lastPatrolTime = 0;
@@ -46,7 +49,6 @@ int currentServoPos = 90;
 bool isInitialized = false;
 
 // Alert blink control
-int alertBlinkCount = 0;
 bool alertBlinkState = false;
 unsigned long lastAlertBlinkTime = 0;
 
@@ -121,8 +123,8 @@ float readUltrasonicCM(int trigPin, int echoPin) {
 void updateSensors() {
   motionDetected = digitalRead(PIN_PIR) == HIGH;
 
-  float dist1 = readUltrasonicCM(PIN_TRIG1, PIN_ECHO1);
-  float dist2 = readUltrasonicCM(PIN_TRIG2, PIN_ECHO2);
+  dist1 = readUltrasonicCM(PIN_TRIG1, PIN_ECHO1);
+  dist2 = readUltrasonicCM(PIN_TRIG2, PIN_ECHO2);
 
   if (dist1 < 0 && dist2 < 0) {
     sensorValid = false;
@@ -130,8 +132,8 @@ void updateSensors() {
     return;
   }
 
-  distance = min(dist1, dist2) / 100.0; // convert to meters
-  confidence = distance > 0 && distance < DISTANCE_THRESHOLD_M ? 90.0 : 40.0;
+  distance = min(dist1, dist2) / 100.0;
+  confidence = (distance > 0 && distance < DISTANCE_THRESHOLD_M) ? 90.0 : 40.0;
   sensorValid = true;
 
   Serial.print("DEBUG Sensors - Motion: ");
@@ -170,20 +172,20 @@ void moveServoSmooth(int targetPos) {
 }
 
 // =============================
-// === LED ALERT/FAULT ===
+// === LED ALERT (DYNAMIC) ===
 // =============================
 void handleAlertBlink() {
-  if (alertBlinkCount >= 6) {
+  if (!motionDetected || !sensorValid || distance <= 0.0) {
     digitalWrite(LED_PIN, LOW);
-    alertBlinkCount = 0;
     return;
   }
 
-  if (millis() - lastAlertBlinkTime >= 100) {
+  unsigned long blinkInterval = map(constrain(distance * 100, 20, 150), 20, 150, 50, 300);
+
+  if (millis() - lastAlertBlinkTime >= blinkInterval) {
     alertBlinkState = !alertBlinkState;
     digitalWrite(LED_PIN, alertBlinkState ? HIGH : LOW);
     lastAlertBlinkTime = millis();
-    alertBlinkCount++;
   }
 }
 
@@ -245,7 +247,10 @@ void runStateMachine() {
         Serial.println(score);
         if (score >= THREAT_SCORE_ALERT_THRESHOLD) {
           currentState = 2;
-          alertBlinkCount = 0;
+          // Directional servo logic
+          if (dist1 > 0 && dist2 > 0) {
+            moveServoSmooth((dist1 < dist2) ? 45 : 135);
+          }
           sendCameraCommand("CAM_CAPTURE");
         } else if (millis() - lastPatrolTime > PATROL_INTERVAL_MS) {
           currentState = 1;
@@ -258,8 +263,9 @@ void runStateMachine() {
       currentState = 0;
       break;
     case 2:
+      updateSensors();
       handleAlertBlink();
-      if (alertBlinkCount >= 6) currentState = 0;
+      if (!motionDetected) currentState = 0;
       break;
     case 3:
       handleFaultBlink();
